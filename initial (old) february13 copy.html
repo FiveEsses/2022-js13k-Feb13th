@@ -1,0 +1,309 @@
+<html><head><style>*{margin:0;padding:0;}html,body,canvas{display:block;width:100%;height:100%;overflow:hidden;position:relative;}canvas{background: #9ae;object-fit:contain;}</style>
+</head><body><canvas id="cv" width="320" height="200"></canvas>
+<script>
+	/* 
+		currently, this is set-up in a circle-based way.
+		I'm thinking it'd be better and easier with things being rectangular.
+		something more complicated than either would ultimately be nicer; kinda worried about bytes though.
+	*/
+	/*
+		kinda started out not wanting to have to have to have a front-end automation set-up
+		or to have to have things be all that readable, so var names and approaches were hand-minified from the go
+		some are staying this way because for better or worse, I'm not adding automation at this stage.
+		Soooooo comments, SOME long variable name, and ofc my output's gonna be a hand-minification of whatever 
+		this ends up being; and yeah, I know that's gonna be an error-prone time-sink
+		#doingitbetternextyear
+	*/
+	/*
+		note: there will be some obvious/known time and runtime inefficiencies (such as re-making images upon reset when I could cache them)
+		also I didn't class stuff and I'm using arrow functions all over the place, so `this` isn't reliable and I have multiple copies of
+		my mob update function since I wasn't thinking ahead -- yolo, said the brogrammer. I'm probably not fixing that prior to submission.
+		Some bad practices, surely, but in the name of byte savings as I go.  DEFINITELY don't expect good looking code
+	*/
+// measurements and constants
+// more tweakable stuff front-loaded
+	// colours (For my fans of the King's English)
+	// probably should've used c as a prefix instead of suffix
+	fc='#333' // fill 
+	pc='#ddd' // player
+	sc='#a00' // scythe
+	ec='#ecd' // enemy?
+	yc='#dd3' // yellow -- I'm a dork
+
+	// speeds
+	PV=3 // player
+	MV=2 // mob
+
+	// radius of entities
+	// and measurements out
+	r=8
+	r2=r*2
+	r3=r*3
+	r4=r*4
+
+	//
+	_ae='addEventListener'
+	// event names
+	_d='keydown'
+	// ... more as necessary
+
+	C=console
+	// math constants
+	M=Math
+	PI=M.PI
+	circ=2*PI
+	p4=PI/4 // 8th of a circle -- facings including diagonals
+
+	// function constants, binds first (non-UI)
+	abs=M.abs.bind(M)
+	cos=M.cos.bind(M)
+	fl=M.floor.bind(M)
+	sin=M.sin.bind(M)
+	sqrt=M.sqrt.bind(M)
+	err=C.error.bind(C)
+
+	nv=navigator
+	dp=Object.defineProperty
+
+	// loops
+	fe=(w,f)=>w.forEach(f)
+
+	rd=(v)=>M.random()*v
+	rw=(m)=>(fl(rd(m))%m)	// whole number random (floored)
+	rf=()=>rw(8)			// random facing
+	sq=(q)=>M.pow(q,2)		// square
+	ton=(cd)=>typeof cd === 'number'
+
+	anto=(p,n)=>{ // angle from p to n (-PI to PI)
+		an=M.atan2(n.y-p.y,n.x-p.x)%circ
+		// if (an<0) { an = 0 - (PI-an)}  // NO! HORRIBLY FLAWED!
+		if (an<0) { an += circ; } // rationale:  -45 deg = 315 = 360-45
+		return an
+	}
+	btwn=(n,p)=>(sqrt(sq(n.x-p.x)+sq(n.y-p.y))) // distance between two entities with x&y values for position
+	fa=(e)=>e.f*p4			// rad angle from facing
+	insc=(n,sy)=>{ // is the mob in the scythe path?  (easier way here would be to use some points on scythe arc -- are they in mob circle?)
+		an = anto(p,n) // get angle from player to mob, see if that's within pi/4 either direction of the scythe angle
+		return (sy)?(sy-p4 <= an && an <= sy+p4):(an < p4 || circ-p4 < an);
+	}
+
+	// UI
+	// context dimensions (derived from canvas attributes)
+	H=cv.height // nabbed from canvas (id: cv)
+	W=cv.width
+	gap=4
+	B={l:r+gap,t:r+gap,r:W-r-gap,b:H-r-gap}
+
+	// context -- star of the show
+	x=cv.getContext('2d')
+
+	// UI binds & functions
+
+	bP=x.beginPath.bind(x)
+	lt=x.lineTo.bind(x)
+	mt=x.moveTo.bind(x)
+	s=x.stroke.bind(x)
+
+	ss=(y)=>x.strokeStyle=y
+	fs=(y)=>x.fillStyle=y
+	cR=()=>x.clearRect(0,0,W,H)			// clear screen
+	//fR=cR								// alternate clear screen - full fill 
+	fR=(s)=>{fs(fc),x.fillRect(0,0,W,H)}
+	fT=(c1,c2,m,tx,y)=>{fs(c1),/*x.fillText(m,tx-1,y-1),x.fillText(m,tx-1,y+1),x.fillText(m,tx-1,y+1),x.fillText(m,tx+1,y+1),fs(c2),*/x.fillText(m,tx,y)}
+	a=(...z)=>{bP(),x.arc(...z),s()}	// draw an arc start to finish
+
+	c=(e)=>a(e.x,e.y,r,0,circ)												// circle around a mob x,y
+	lr=(e)=>{bP(),mt(e.x,e.y),lt(e.x+r*cos(fa(e)), e.y+r*sin(fa(e))),s()}	// facing line, center to circle @ facing direction
+
+	hum=(n)=>{c(n),lr(n),s()} // human (living people draw)
+	dea=hum // death (reaper) draws like a human
+	scy=(n)=>{a(n.x,n.y,r2,(n.f-1)*p4,(n.f+1)*p4)} // scythe draw
+	sla=(n)=>{} // slain (ghost draw)
+
+
+	// GAME ELEMENTS
+	e=[] // entities (mobs)
+	me=()=>e.push({ // mob ctor
+		f:rf(),x:rw(W-2*r)+r,y:rw(H-2*r)+r,v:(rd(.5*MV)+.5*MV)/2,d:!1,
+		u:(n,m)=>{ // update
+			rxy=[-1,0,1].map((o) => {
+				ef=(o+n.f)%8
+				tn={ v:n.v, x:n.x, y:n.y }
+				let{ ox, oy, rx, ry }=vf({f:ef,v:n.v,x:n.x,y:n.y})
+				ad=sqrt(sq(p.x-rx)+sq(p.y-ry))
+				return { ox, oy, rx, ry, ad, ef }
+			})
+			min=rxy.reduce((p,c)=>p?p.ad<c.ad?p:c:c)
+			dx=p.x-n.x
+			dy=p.y-n.y
+			pd=btwn(p,n)
+			if (min.ef !== n.f && min.ad <= pd && abs(dx-dy) > r4 && !rw(3)) { min=rxy[1] }
+			if(min.ef===n.f) { // current facing
+				if (min.ad<=pd) { //continuing will step toward
+					n.x=min.rx
+					n.y=min.ry
+				} else {} // love death
+			} else {
+				n.f = min.ef
+			}
+		}
+	})
+	MOBS=8
+	wav=()=>{ setTimeout(()=>{for(j=0;j<MOBS;j++)me()}, 250) } // make a wave of <MOBS> count of enemies
+	re=()=>{ // reset enemies
+		e=[]
+	}
+	
+	p=null
+	rp=()=>{ // reset player
+		p={// player
+			f:rf(),
+			x:W/2,y:H/2,
+			v:3,
+			e:100,
+			m:!1,
+			s:!1,
+
+
+			u:(p,m)=>{ // update
+				// enemy collision and scything junk first
+				cut=[]
+				sy=fa(p)
+				fe(e,(n,i)=>{
+					bt=btwn(p,n);
+					if (bt<=r3) {
+						touching=bt<r2
+						if (p.s && ((bt<=r)||insc(n,sy))) {
+							cut.unshift(i);
+						}
+					}
+				})
+				fe(cut,i => e.splice(i,1))
+				// movement
+				mv(p,B)
+			}
+		}
+		dp(p,'m',{
+			get: () => `${kst.ArrowUp?'t':''}${kst.ArrowDown?'b':''}${kst.ArrowLeft?'l':''}${kst.ArrowRight?'r':''}`
+		})
+	}
+	tf=()=> { // testing, change facing
+		p.f+=1
+		p.f%=8
+	}
+	vf=(n)=>{ // determine where a move would go
+		an=fa(n)
+		v=n.v
+		ox=v*cos(an)
+		oy=v*sin(an)
+		rx=n.x+ox
+		ry=n.y+oy
+		return {an,ox,rx,oy,ry}
+	}
+	fb=(n,bd)=>{ // force bounds
+		let{l,t,r,b}=bd
+		let{x,y}=n;
+		(x<l)&&(n.x=l);
+		(x>r)&&(n.x=r);
+		(y<t)&&(n.y=t);
+		(y>b)&&(n.y=b);
+	}
+	mv=(p,b)=>{ // move
+		ds={r:0,br:1,b:2,bl:3,l:4,tl:5,t:6,tr:7,tbl:4,tbr:0,tlr:6,blr:2}
+		f=p.m
+		mk=ds[f]
+		if (!ton(mk)) return
+		p.f=mk
+		let{rx:x,ry:y}=vf(p)
+		p.x=x
+		p.y=y
+		fb(p,b)
+	}
+	sm=(p,s,f)=>{p.m=s,p.f=f} // set moving/not
+
+	// CONTROLS
+
+	// keyboard
+	kst={};
+	ksh=(key,typ)=>{ // keyboard handler (so sloppy!)
+		console.log('ksh',key,typ);
+		isdn=typ===_d
+		kst[key]=isdn
+		if (!isdn) {
+			switch(key) {
+				case 'f':tf();break
+				case 'w':wav();break
+				case 'Escape':reset(250)
+				default:break
+			}
+		}
+		switch(key) {
+			case 's':(p.s=isdn)
+			default:break
+		}
+	}
+	// bind them
+	['keyup',_d].forEach((e)=>document.body[_ae](e,(v)=>{
+		!v.repeat&&ksh(v.key,v.type)
+	}))
+	// gamepad
+	gp=null
+	window[_ae]('gamepadconnected',(v)=>{
+		gs = nv.getGamepads()
+	})
+	pg=()=>{
+		gs=null
+		//.filter(z=>!!z)
+		if(gs){
+			msg='[press g to re-choose later]\nChoose which gamepad to use (or non-numeric not to use)'
+			fe(gs,(z)=>msg=`${msg}\n${z.index} - ${z.id}`)
+			ch=1*prompt(msg)
+			if (isNaN(ch)) return
+			gp=gs.filter(z=>z.index===ch)
+		}
+	}
+	g=()=>{
+		if(!gp||!gp.connected)return
+		axs=gp.axes
+		bns=gp.buttons
+		debugger
+	}
+	pg()
+
+	// GAME LOOP PARTS
+	d=(m)=>{ // draw
+		msg=`Evil: ${p.e}%!`
+		fR(),ss(pc),dea(p),ss(sc),lr(p),(p.s&&scy(p)),ss(ec),fe(e,(n)=>{n.d?sla(n):hum(n)}),(fT(pc,sc,msg,4,10))}//draw
+	u=(m)=>{ // update
+		fe([p,...e],(n)=>{n.u(n,m)})}//update
+	t=(m)=>{d(m),u(m)}//tick
+
+	pv=null
+	st=null
+	raf=null
+	keepon=!1
+	l=(m)=>{
+		if(st===null){st=m}
+		dt=m-st
+		if (pv!==m) { t(m)}
+		pv=m
+		if (keepon) raf()
+		else cR()
+	}//loop
+	
+	rg=()=>{ // reset game
+		kst={}
+		keepon=!1
+		pv=st=raf=null
+		raf=window.requestAnimationFrame.bind(window,l)
+		re(),rp()
+	}
+	sg=()=>{ (keepon=!0),l(0) }
+	reset=(dt=0)=>{
+		rg()
+		setTimeout(sg,dt||0)
+	}
+	// START!
+	reset()
+
+</script></body></html>
